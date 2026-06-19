@@ -15,6 +15,7 @@ test('idempotency returns same resource for same key', async () => {
     headers: { 'x-api-key': 'k', 'Idempotency-Key': idem },
     body: { userId: 'u1', type: 'note', payload: 'x' }
   });
+
   const b = await postJson(`${base}/v1/signals`, {
     headers: { 'x-api-key': 'k', 'Idempotency-Key': idem },
     body: { userId: 'u1', type: 'note', payload: 'x' }
@@ -22,17 +23,58 @@ test('idempotency returns same resource for same key', async () => {
 
   assert.equal(a.id, b.id);
   assert.equal(a.idempotencyKey, b.idempotencyKey);
+
   proc.kill();
 });
 
-async function postJson(url, { headers, body }){
+test('concurrent idempotent requests return same resource', async () => {
+  const proc = spawn('node', ['src/server.js'], {
+    env: { ...process.env, API_KEY: 'k', PORT: '9093' }
+  });
+
+  await wait(300);
+
+  const base = 'http://localhost:9093';
+  const idem = 'concurrent-key';
+
+  const [a, b, c] = await Promise.all([
+    postJson(`${base}/v1/signals`, {
+      headers: { 'x-api-key': 'k', 'Idempotency-Key': idem },
+      body: { userId: 'u1', type: 'note', payload: 'x' }
+    }),
+    postJson(`${base}/v1/signals`, {
+      headers: { 'x-api-key': 'k', 'Idempotency-Key': idem },
+      body: { userId: 'u1', type: 'note', payload: 'x' }
+    }),
+    postJson(`${base}/v1/signals`, {
+      headers: { 'x-api-key': 'k', 'Idempotency-Key': idem },
+      body: { userId: 'u1', type: 'note', payload: 'x' }
+    })
+  ]);
+
+  assert.equal(a.id, b.id);
+  assert.equal(b.id, c.id);
+
+  proc.kill();
+});
+
+async function postJson(url, { headers, body }) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
-    const req = http.request(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers } }, (res) => {
-      let chunks=''; res.on('data', d => chunks+=d);
-      res.on('end', () => resolve(JSON.parse(chunks||'{}')));
+    const req = http.request(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...headers
+      }
+    }, (res) => {
+      let chunks = '';
+      res.on('data', d => chunks += d);
+      res.on('end', () => resolve(JSON.parse(chunks || '{}')));
     });
+
     req.on('error', reject);
-    req.write(data); req.end();
+    req.write(data);
+    req.end();
   });
 }
